@@ -39,26 +39,6 @@ resource "aws_security_group" "allow_all_outbound" {
   }
 }
 
-resource "aws_security_group" "allow_cluster" {
-  name_prefix = "${var.appname}-${var.environ}-${module.vpc.vpc_id}-"
-  description = "Allow all traffic within cluster"
-  vpc_id = "${module.vpc.vpc_id}"
-
-  ingress = {
-    from_port = 0
-    to_port = 65535
-    protocol = "tcp"
-    self = true
-  }
-
-  egress = {
-    from_port = 0
-    to_port = 65535
-    protocol = "tcp"
-    self = true
-  }
-}
-
 resource "aws_security_group" "allow_all_ssh" {
   name_prefix = "${var.appname}-${var.environ}-${module.vpc.vpc_id}-"
   description = "Allow all inbound SSH traffic"
@@ -76,21 +56,7 @@ resource "aws_security_group" "allow_all_ssh" {
 # to assume the role of ec2
 resource "aws_iam_role" "ecs" {
   name = "${var.appname}_ecs_${var.environ}"
-  assume_role_policy = <<EOF
-{
-    "Version": "2012-10-17",
-    "Statement": [
-      {
-        "Action": "sts:AssumeRole",
-        "Principal": {
-          "Service": "ec2.amazonaws.com"
-        },
-        "Effect": "Allow",
-        "Sid": ""
-      }
-    ]
-  }
-  EOF
+  assume_role_policy = "${file("iam_role.json")}"
 }
 
 # This is a policy attachement for the "ecs" role, it provides access
@@ -105,23 +71,31 @@ resource "aws_ecs_cluster" "ecs-lda-tagger" {
   name = "ecs-lda-tagger-cluster"
 }
 
-# resource "aws_ecs_service" "ecs_service" {
-#   name = "${var.appname}_${var.environ}"
-#   cluster = "${aws_ecs_cluster.cluster.id}"
-#   task_definition = "${aws_ecs_task_definition.ecs_task.arn}"
-#   desired_count = 3
-#   iam_role = "${aws_iam_role.ecs_elb.arn}"
-#   depends_on = ["aws_iam_policy_attachment.ecs_elb"]
-#   deployment_minimum_healthy_percent = 50
+resource "aws_ecs_task_definition" "service" {
+  family                = "service"
+  container_definitions = "${file("service.json")}"
 
-#   load_balancer {
-#     elb_name = "${aws_elb.service_elb.id}"
-#     container_name = "${var.appname}_${var.environ}"
-#     container_port = "${var.docker_port}"
-#   }
-# }
+  volume {
+    name      = "service-storage"
+    host_path = "/ecs/service-storage"
+  }
 
-resource "template_file" "user_data" {
+  placement_constraints {
+    type       = "memberOf"
+    expression = "attribute:ecs.availability-zone in [eu-west-2a, eu-west-2b]"
+  }
+}
+
+resource "aws_ecs_service" "ecs_service" {
+  name = "${var.appname}_${var.environ}"
+  cluster = "${aws_ecs_cluster.ecs-lda-tagger.id}"
+  task_definition = "${aws_ecs_task_definition.service.arn}"
+  desired_count = 3
+  depends_on = ["aws_iam_policy_attachment.ecs_for_ec2"]
+  deployment_minimum_healthy_percent = 50
+}
+
+data "template_file" "user_data" {
   template = "ec2_user_data.tmpl"
   vars {
     cluster_name = "${var.appname}_${var.environ}"
@@ -130,7 +104,7 @@ resource "template_file" "user_data" {
 
 resource "aws_iam_instance_profile" "ecs" {
   name = "${var.appname}_${var.environ}"
-  roles = ["${aws_iam_role.ecs.name}"]
+  role = "${aws_iam_role.ecs.name}"
 }
 
 resource "aws_launch_configuration" "ecs_cluster" {
@@ -141,16 +115,15 @@ resource "aws_launch_configuration" "ecs_cluster" {
   associate_public_ip_address = true
   security_groups = [
     "${aws_security_group.allow_all_ssh.id}",
-    "${aws_security_group.allow_all_outbound.id}",
-    "${aws_security_group.allow_cluster.id}",
+    "${aws_security_group.allow_all_outbound.id}"
   ]
-  user_data = "${template_file.user_data.rendered}"
+  user_data = "${data.template_file.user_data.rendered}"
   key_name = "${var.key_name}"
 }
 
 resource "aws_autoscaling_group" "ecs_cluster" {
   name = "${var.appname}_${var.environ}"
-  vpc_zone_identifier = ["10.100.101.0/24" , "10.100.102.0/24"]
+  vpc_zone_identifier = ["${module.vpc.public_subnets}"]
   min_size = 0
   max_size = 3
   desired_capacity = 3
