@@ -73,7 +73,7 @@ resource "aws_ecs_cluster" "ecs-lda-tagger" {
 
 resource "aws_ecs_task_definition" "service" {
   family                = "service"
-  container_definitions = "${file("service.json")}"
+  container_definitions = "${file("matt.json")}"
 
   volume {
     name      = "service-storage"
@@ -90,7 +90,7 @@ resource "aws_ecs_service" "ecs_service" {
   name = "${var.appname}_${var.environ}"
   cluster = "${aws_ecs_cluster.ecs-lda-tagger.id}"
   task_definition = "${aws_ecs_task_definition.service.arn}"
-  desired_count = 3
+  desired_count = 1
   depends_on = ["aws_iam_policy_attachment.ecs_for_ec2"]
   deployment_minimum_healthy_percent = 50
 }
@@ -124,9 +124,9 @@ resource "aws_launch_configuration" "ecs_cluster" {
 resource "aws_autoscaling_group" "ecs_cluster" {
   name = "${var.appname}_${var.environ}"
   vpc_zone_identifier = ["${module.vpc.public_subnets}"]
-  min_size = 0
-  max_size = 3
-  desired_capacity = 3
+  min_size = 1
+  max_size = 1
+  desired_capacity = 1
   launch_configuration = "${aws_launch_configuration.ecs_cluster.name}"
   health_check_type = "EC2"
 }
